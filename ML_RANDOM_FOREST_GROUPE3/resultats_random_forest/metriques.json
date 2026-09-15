@@ -1,0 +1,21 @@
+{
+  "modele": "RandomForestClassifier",
+  "horizon_ticks": 20,
+  "meilleure_configuration": {
+    "n_estimators": 700,
+    "max_depth": 18,
+    "min_samples_leaf": 3,
+    "max_features": 0.7
+  },
+  "train_rows": 114408,
+  "validation_rows": 24516,
+  "test_rows": 24516,
+  "train_runs": 168,
+  "validation_runs": 36,
+  "test_runs": 36,
+  "test": {
+    "accuracy": 0.9139745472344591,
+    "balanced_accuracy": 0.8013349508899617,
+    "f1_macro": 0.7737227162478675
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "horizon_ticks": 20,
+  "train_rows": 114408,
+  "validation_rows": 24516,
+  "test_rows": 24516,
+  "train_runs": 168,
+  "validation_runs": 36,
+  "test_runs": 36,
+  "validation": {
+    "accuracy": 0.9168706151085005,
+    "balanced_accuracy": 0.8293246639767099,
+    "f1_macro": 0.7882236485270236
+  },
+  "test": {
+    "accuracy": 0.9250285527818567,
+    "balanced_accuracy": 0.8260254780789413,
+    "f1_macro": 0.8047476244297883
+  },
+  "best_iteration": 857
+}

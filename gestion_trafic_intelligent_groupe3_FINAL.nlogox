@@ -1,0 +1,1286 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<model version="NetLogo 7.0.4" snapToGrid="true">
+  <code>
+; ============================================================================
+; TP SYSTEME MULTI-AGENTS - GROUPE 3
+; Sujet : Gestion intelligente du trafic routier sur la reduction
+;         des embouteillages en temps reel
+; NetLogo 7.0.4
+; ============================================================================
+
+breed [cars car]
+breed [junctions junction]
+breed [signals signal]
+
+globals [
+  ;; Parametres de simulation (definis dans le code pour eviter les erreurs de variables d'interface)
+  control-mode
+  arrival-rate
+  initial-cars
+  max-cars
+  ns-demand-share
+  max-speed
+  visual-delay
+  slow-visualization?
+  csv-export?
+  export-interval
+  fixed-green
+  min-green
+  max-green
+  sensor-range
+  switch-threshold
+  clearance-time
+
+  total-created
+  total-completed
+  total-wait-completed
+  total-travel-time
+  max-queue-observed
+
+  stopped-cars-value
+  queue-ns-value
+  queue-ew-value
+  congestion-index-value
+  congestion-level
+  avg-wait-current-value
+  avg-wait-completed-value
+  avg-travel-time-value
+  average-speed-value
+  mean-queue-value
+  throughput-value
+  cars-in-intersections-value
+
+  exit-ticks
+  run-id
+  csv-file-name
+]
+
+cars-own [
+  current-speed
+  wait-time
+  birth-tick
+  stopped?
+  committed-junction-id
+]
+
+signals-own [
+  signal-junction-id
+  required-phase
+]
+
+junctions-own [
+  junction-id
+  phase           ; 0 = Est-Ouest vert, 1 = Nord-Sud vert, 2 = tout rouge
+  next-phase
+  phase-ticks
+]
+
+; ----------------------------------------------------------------------------
+; INITIALISATION
+; ----------------------------------------------------------------------------
+
+to ensure-default-settings
+  ;; Lors d'un lancement manuel, les globals non initialises valent 0.
+  ;; On teste donc le TYPE de control-mode au lieu de le comparer a une chaine vide.
+  ;; BehaviorSpace fournit deja une chaine (CLASSIQUE/INTELLIGENT) et ses valeurs sont conservees.
+  if not is-string? control-mode [
+    set control-mode "INTELLIGENT"
+    set arrival-rate 40
+    set initial-cars 30
+    set max-cars 300
+    set ns-demand-share 50
+    set max-speed 0.25
+    set visual-delay 0.05
+    set slow-visualization? true
+    set csv-export? false
+    set export-interval 5
+    set fixed-green 60
+    set min-green 30
+    set max-green 100
+    set sensor-range 6
+    set switch-threshold 2
+    set clearance-time 20
+  ]
+
+  ;; Protection supplementaire si un bouton est utilise avant INITIALISER.
+  if not is-boolean? slow-visualization? [ set slow-visualization? true ]
+  if not is-boolean? csv-export? [ set csv-export? false ]
+end
+
+
+to setup
+  ensure-default-settings
+
+  ;; Nettoyer la simulation sans effacer les parametres choisis
+  clear-turtles
+  clear-patches
+  clear-drawing
+  clear-all-plots
+
+  set total-created 0
+  set total-completed 0
+  set total-wait-completed 0
+  set total-travel-time 0
+  set max-queue-observed 0
+
+  set stopped-cars-value 0
+  set queue-ns-value 0
+  set queue-ew-value 0
+  set congestion-index-value 0
+  set congestion-level "FAIBLE"
+  set avg-wait-current-value 0
+  set avg-wait-completed-value 0
+  set avg-travel-time-value 0
+  set average-speed-value 0
+  set mean-queue-value 0
+  set throughput-value 0
+  set cars-in-intersections-value 0
+
+  set exit-ticks []
+  set run-id random 1000000
+  set csv-file-name "trafic_groupe3.csv"
+
+  setup-map
+  setup-junctions
+  paint-stop-lines
+  setup-signals
+  reset-ticks
+
+  let attempts 0
+  while [count cars &lt; initial-cars and attempts &lt; (initial-cars * 8 + 20)] [
+    try-spawn-random-car
+    set attempts attempts + 1
+  ]
+
+  refresh-metrics
+  update-signal-display
+
+  if csv-export? [
+    prepare-csv
+    export-row
+  ]
+end
+
+
+to setup-map
+  ask patches [
+    set pcolor green + 3
+    set plabel ""
+    set plabel-color white
+
+    let horizontal-road? ((abs (pycor - 8) &lt;= 2) or (abs (pycor + 8) &lt;= 2))
+    let vertical-road?   ((abs (pxcor - 8) &lt;= 2) or (abs (pxcor + 8) &lt;= 2))
+
+    if horizontal-road? or vertical-road? [
+      set pcolor gray - 1
+    ]
+
+    ; Lignes centrales hors des carrefours.
+    if ((pycor = 8) or (pycor = -8)) and (not vertical-road?) [
+      set pcolor yellow
+    ]
+    if ((pxcor = 8) or (pxcor = -8)) and (not horizontal-road?) [
+      set pcolor yellow
+    ]
+  ]
+end
+
+
+to setup-junctions
+  create-junctions 1 [
+    set junction-id 1
+    setxy -8 -8
+    initialize-junction 0
+  ]
+  create-junctions 1 [
+    set junction-id 2
+    setxy 8 -8
+    initialize-junction 1
+  ]
+  create-junctions 1 [
+    set junction-id 3
+    setxy -8 8
+    initialize-junction 1
+  ]
+  create-junctions 1 [
+    set junction-id 4
+    setxy 8 8
+    initialize-junction 0
+  ]
+end
+
+
+to initialize-junction [initial-phase]
+  set phase initial-phase
+  set next-phase (1 - initial-phase)
+  set phase-ticks 0
+  set hidden? true
+end
+
+
+to paint-stop-lines
+  ; Une ligne blanche indique clairement ou chaque voie doit s'arreter.
+  ask junctions [
+    let jx round xcor
+    let jy round ycor
+
+    let p-est   patch (jx - 3) (jy - 1)
+    let p-ouest patch (jx + 3) (jy + 1)
+    let p-nord  patch (jx + 1) (jy - 3)
+    let p-sud   patch (jx - 1) (jy + 3)
+
+    if p-est   != nobody [ ask p-est   [ set pcolor white ] ]
+    if p-ouest != nobody [ ask p-ouest [ set pcolor white ] ]
+    if p-nord  != nobody [ ask p-nord  [ set pcolor white ] ]
+    if p-sud   != nobody [ ask p-sud   [ set pcolor white ] ]
+  ]
+end
+
+
+to setup-signals
+  ; Quatre vrais indicateurs de feu par carrefour : un pour chaque approche.
+  foreach [1 2 3 4] [ jid -&gt;
+    let j one-of junctions with [junction-id = jid]
+
+    if j != nobody [
+      let jx [xcor] of j
+      let jy [ycor] of j
+
+      ; Voiture venant de l'ouest et allant vers l'est.
+      create-signals 1 [
+        set signal-junction-id jid
+        set required-phase 0
+        setxy (jx - 2.7) (jy - 2.15)
+        set shape "traffic-light"
+        set size 0.95
+        set color red
+      ]
+
+      ; Voiture venant de l'est et allant vers l'ouest.
+      create-signals 1 [
+        set signal-junction-id jid
+        set required-phase 0
+        setxy (jx + 2.7) (jy + 2.15)
+        set shape "traffic-light"
+        set size 0.95
+        set color red
+      ]
+
+      ; Voiture venant du sud et allant vers le nord.
+      create-signals 1 [
+        set signal-junction-id jid
+        set required-phase 1
+        setxy (jx + 2.15) (jy - 2.7)
+        set shape "traffic-light"
+        set size 0.95
+        set color red
+      ]
+
+      ; Voiture venant du nord et allant vers le sud.
+      create-signals 1 [
+        set signal-junction-id jid
+        set required-phase 1
+        setxy (jx - 2.15) (jy + 2.7)
+        set shape "traffic-light"
+        set size 0.95
+        set color red
+      ]
+    ]
+  ]
+end
+
+; ----------------------------------------------------------------------------
+; COMMANDES D'INTERFACE EN FRANCAIS
+; ----------------------------------------------------------------------------
+
+to mode-classique
+  ensure-default-settings
+  set control-mode "CLASSIQUE"
+end
+
+to mode-intelligent
+  ensure-default-settings
+  set control-mode "INTELLIGENT"
+end
+
+to trafic-faible
+  ensure-default-settings
+  set arrival-rate 20
+end
+
+to trafic-moyen
+  ensure-default-settings
+  set arrival-rate 40
+end
+
+to trafic-fort
+  ensure-default-settings
+  set arrival-rate 70
+end
+
+to basculer-ralentissement
+  ensure-default-settings
+  set slow-visualization? not slow-visualization?
+end
+
+to basculer-export-csv
+  ensure-default-settings
+  set csv-export? not csv-export?
+  if csv-export? [
+    prepare-csv
+  ]
+end
+
+; ----------------------------------------------------------------------------
+; BOUCLE PRINCIPALE
+; ----------------------------------------------------------------------------
+
+to go
+  update-junctions
+  maybe-spawn-cars
+  move-cars
+
+  tick
+  refresh-metrics
+
+  if csv-export? [
+    if ticks mod export-interval = 0 [
+      export-row
+    ]
+  ]
+
+  if slow-visualization? [
+    wait visual-delay
+  ]
+end
+
+; ----------------------------------------------------------------------------
+; FEUX DE CIRCULATION
+; ----------------------------------------------------------------------------
+
+to update-junctions
+  ask junctions [
+    set phase-ticks phase-ticks + 1
+
+    ifelse phase = 2 [
+      ; Phase de securite : toutes les directions sont rouges.
+      if phase-ticks &gt;= clearance-time [
+        set phase next-phase
+        set phase-ticks 0
+      ]
+    ] [
+      if control-mode = "CLASSIQUE" [
+        if phase-ticks &gt;= fixed-green [
+          start-clearance
+        ]
+      ]
+
+      if control-mode = "INTELLIGENT" [
+        intelligent-control
+      ]
+    ]
+  ]
+
+  update-signal-display
+end
+
+
+to intelligent-control
+  ; Procedure executee par un junction.
+  let effective-min min-green
+  let effective-max max-green
+
+  if effective-min &lt; 1 [ set effective-min 1 ]
+  if effective-max &lt; effective-min [ set effective-max effective-min ]
+
+  if phase-ticks &gt;= effective-min [
+    let ew ew-demand self
+    let ns ns-demand self
+    let current-demand 0
+    let other-demand 0
+    let should-switch? false
+
+    if phase = 0 [
+      set current-demand ew
+      set other-demand ns
+    ]
+    if phase = 1 [
+      set current-demand ns
+      set other-demand ew
+    ]
+
+    ; Ne jamais depasser la duree maximale.
+    if phase-ticks &gt;= effective-max [
+      set should-switch? true
+    ]
+
+    ; Donner le vert a l'axe nettement plus charge.
+    if other-demand &gt; (current-demand + switch-threshold) [
+      set should-switch? true
+    ]
+
+    ; Ne pas conserver inutilement un vert sur un axe vide.
+    if (current-demand = 0) and (other-demand &gt; 0) [
+      set should-switch? true
+    ]
+
+    if should-switch? [
+      start-clearance
+    ]
+  ]
+end
+
+
+to start-clearance
+  ; Passage obligatoire par une phase tout rouge.
+  if phase != 2 [
+    set next-phase (1 - phase)
+    set phase 2
+    set phase-ticks 0
+  ]
+end
+
+
+to update-signal-display
+  ; Chaque feu physique est associe a UNE approche precise du carrefour.
+  ; Phase 0 = axe Est-Ouest vert ; phase 1 = axe Nord-Sud vert ; phase 2 = tout rouge.
+  ask signals [
+    let jid signal-junction-id
+    let j one-of junctions with [junction-id = jid]
+
+    if j != nobody [
+      ifelse [phase] of j = required-phase
+        [ set color green ]
+        [ set color red ]
+    ]
+  ]
+end
+
+; ----------------------------------------------------------------------------
+; GENERATION DYNAMIQUE DES VEHICULES
+; ----------------------------------------------------------------------------
+
+to maybe-spawn-cars
+  ; arrival-rate varie de 0 a 100.
+  ; ns-demand-share repartit la demande entre axes N-S et E-O.
+  let base-probability (arrival-rate / 1000)
+  let ns-probability min (list 0.95 (base-probability * ns-demand-share / 50))
+  let ew-probability min (list 0.95 (base-probability * (100 - ns-demand-share) / 50))
+
+  let entry-id 0
+  while [entry-id &lt; 8] [
+    let p ew-probability
+    if entry-id &gt;= 4 [ set p ns-probability ]
+
+    if random-float 1 &lt; p [
+      spawn-from-entry entry-id
+    ]
+
+    set entry-id entry-id + 1
+  ]
+end
+
+
+to try-spawn-random-car
+  ifelse random-float 100 &lt; ns-demand-share
+    [ spawn-from-entry (4 + random 4) ]
+    [ spawn-from-entry (random 4) ]
+end
+
+
+to spawn-from-entry [entry-id]
+  if count cars &lt; max-cars [
+    let sx 0
+    let sy 0
+    let sh 0
+
+    ; Routes horizontales.
+    if entry-id = 0 [ set sx (min-pxcor + 0.5) set sy -9 set sh 90  ]
+    if entry-id = 1 [ set sx (max-pxcor - 0.5) set sy -7 set sh 270 ]
+    if entry-id = 2 [ set sx (min-pxcor + 0.5) set sy 7  set sh 90  ]
+    if entry-id = 3 [ set sx (max-pxcor - 0.5) set sy 9  set sh 270 ]
+
+    ; Routes verticales.
+    if entry-id = 4 [ set sx -7 set sy (min-pycor + 0.5) set sh 0   ]
+    if entry-id = 5 [ set sx -9 set sy (max-pycor - 0.5) set sh 180 ]
+    if entry-id = 6 [ set sx 9  set sy (min-pycor + 0.5) set sh 0   ]
+    if entry-id = 7 [ set sx 7  set sy (max-pycor - 0.5) set sh 180 ]
+
+    if entry-clear? sx sy [
+      create-cars 1 [
+        setxy sx sy
+        set heading sh
+        set shape "car"
+        set size 1.15
+        set color one-of [blue sky cyan violet orange magenta]
+        set current-speed 0
+        set wait-time 0
+        set birth-tick ticks
+        set stopped? false
+        set committed-junction-id 0
+      ]
+
+      set total-created total-created + 1
+    ]
+  ]
+end
+
+
+to-report entry-clear? [x y]
+  report not any? cars with [distancexy x y &lt; 1.3]
+end
+
+; ----------------------------------------------------------------------------
+; DEPLACEMENT DES VEHICULES
+; ----------------------------------------------------------------------------
+
+to move-cars
+  ask cars [
+    ; Si la voiture a deja franchi le carrefour auquel elle etait engagee,
+    ; elle redevient libre de prendre en compte le prochain feu.
+    update-commitment-status
+
+    let desired-speed max-speed
+    let gap distance-to-car-ahead
+
+    ; Distance de securite avec le vehicule precedent.
+    if gap &lt; 999 [
+      set desired-speed min (list desired-speed (max (list 0 (gap - 0.95))))
+    ]
+
+    ; Une voiture non encore engagee doit respecter le feu ET verifier
+    ; qu'elle pourra degager completement le carrefour.
+    if committed-junction-id = 0 [
+      let j next-junction-ahead
+
+      if j != nobody [
+        let d signed-distance-to-junction j
+
+        ; La ligne d'arret se trouve environ 3 cases avant le centre.
+        if d &lt;= 3.2 and d &gt; 0 [
+          if not light-allows? j [
+            set desired-speed 0
+          ]
+
+          if intersection-entry-blocked? j [
+            set desired-speed 0
+          ]
+
+          ; Des que le vehicule recoit l'autorisation d'entrer, il est engage.
+          ; Il terminera alors sa traversee meme si le feu change entre-temps.
+          if (desired-speed &gt; 0) and (d &lt;= 2.2) [
+            set committed-junction-id [junction-id] of j
+          ]
+        ]
+      ]
+    ]
+
+    set current-speed desired-speed
+    set stopped? (current-speed &lt; 0.05)
+
+    if stopped? [
+      set wait-time wait-time + 1
+    ]
+
+    if current-speed &gt; 0 [
+      ifelse can-move? current-speed [
+        fd current-speed
+        update-commitment-status
+      ] [
+        complete-trip
+        die
+      ]
+    ]
+  ]
+end
+
+
+to update-commitment-status
+  ; Procedure executee par une voiture.
+  if committed-junction-id != 0 [
+    let jid committed-junction-id
+    let j one-of junctions with [junction-id = jid]
+
+    ifelse j = nobody [
+      set committed-junction-id 0
+    ] [
+      let jx [xcor] of j
+      let jy [ycor] of j
+      let cleared? false
+
+      if heading = 90  and xcor &gt; (jx + 3.0) [ set cleared? true ]
+      if heading = 270 and xcor &lt; (jx - 3.0) [ set cleared? true ]
+      if heading = 0   and ycor &gt; (jy + 3.0) [ set cleared? true ]
+      if heading = 180 and ycor &lt; (jy - 3.0) [ set cleared? true ]
+
+      if cleared? [
+        set committed-junction-id 0
+      ]
+    ]
+  ]
+end
+
+
+to complete-trip
+  ; Procedure executee juste avant la sortie du reseau.
+  set total-completed total-completed + 1
+  set total-wait-completed total-wait-completed + wait-time
+  set total-travel-time total-travel-time + (ticks - birth-tick)
+  set exit-ticks fput ticks exit-ticks
+end
+
+
+to-report distance-to-car-ahead
+  ; 999 signifie qu'il n'y a personne devant a courte distance.
+  let mx xcor
+  let my ycor
+  let mh heading
+  let candidates no-turtles
+
+  if mh = 90 [
+    set candidates other cars with [
+      heading = 90 and abs (ycor - my) &lt; 0.25 and
+      xcor &gt; mx and (xcor - mx) &lt;= 3
+    ]
+    if any? candidates [ report min [xcor - mx] of candidates ]
+  ]
+
+  if mh = 270 [
+    set candidates other cars with [
+      heading = 270 and abs (ycor - my) &lt; 0.25 and
+      xcor &lt; mx and (mx - xcor) &lt;= 3
+    ]
+    if any? candidates [ report min [mx - xcor] of candidates ]
+  ]
+
+  if mh = 0 [
+    set candidates other cars with [
+      heading = 0 and abs (xcor - mx) &lt; 0.25 and
+      ycor &gt; my and (ycor - my) &lt;= 3
+    ]
+    if any? candidates [ report min [ycor - my] of candidates ]
+  ]
+
+  if mh = 180 [
+    set candidates other cars with [
+      heading = 180 and abs (xcor - mx) &lt; 0.25 and
+      ycor &lt; my and (my - ycor) &lt;= 3
+    ]
+    if any? candidates [ report min [my - ycor] of candidates ]
+  ]
+
+  report 999
+end
+
+
+to-report light-allows? [j]
+  ; Phase 0 autorise Est-Ouest ; phase 1 autorise Nord-Sud ; phase 2 bloque tout le monde.
+  let required 1
+  if (heading = 90) or (heading = 270) [
+    set required 0
+  ]
+
+  report ([phase] of j = required)
+end
+
+
+to-report intersection-entry-blocked? [j]
+  ; Ne pas bloquer tout le carrefour simplement parce qu'un vehicule
+  ; de la meme file est deja en train de le traverser.
+  ; On interdit l'entree uniquement si la ZONE DE SORTIE est occupee
+  ; par un vehicule arrete : c'est le principe "ne pas bloquer le carrefour".
+  let jx [xcor] of j
+  let jy [ycor] of j
+  let mx xcor
+  let my ycor
+
+  if heading = 90 [
+    if any? other cars with [
+      heading = 90 and abs (ycor - my) &lt; 0.25 and
+      xcor &gt; (jx + 2.0) and xcor &lt; (jx + 4.5) and
+      current-speed &lt; 0.05
+    ] [ report true ]
+  ]
+
+  if heading = 270 [
+    if any? other cars with [
+      heading = 270 and abs (ycor - my) &lt; 0.25 and
+      xcor &lt; (jx - 2.0) and xcor &gt; (jx - 4.5) and
+      current-speed &lt; 0.05
+    ] [ report true ]
+  ]
+
+  if heading = 0 [
+    if any? other cars with [
+      heading = 0 and abs (xcor - mx) &lt; 0.25 and
+      ycor &gt; (jy + 2.0) and ycor &lt; (jy + 4.5) and
+      current-speed &lt; 0.05
+    ] [ report true ]
+  ]
+
+  if heading = 180 [
+    if any? other cars with [
+      heading = 180 and abs (xcor - mx) &lt; 0.25 and
+      ycor &lt; (jy - 2.0) and ycor &gt; (jy - 4.5) and
+      current-speed &lt; 0.05
+    ] [ report true ]
+  ]
+
+  report false
+end
+
+
+to-report next-junction-ahead
+  let mx xcor
+  let my ycor
+  let mh heading
+  let candidates no-turtles
+
+  if mh = 90 [
+    set candidates junctions with [xcor &gt; mx and abs (ycor - my) &lt;= 1.1]
+    if any? candidates [ report min-one-of candidates [xcor] ]
+  ]
+
+  if mh = 270 [
+    set candidates junctions with [xcor &lt; mx and abs (ycor - my) &lt;= 1.1]
+    if any? candidates [ report max-one-of candidates [xcor] ]
+  ]
+
+  if mh = 0 [
+    set candidates junctions with [ycor &gt; my and abs (xcor - mx) &lt;= 1.1]
+    if any? candidates [ report min-one-of candidates [ycor] ]
+  ]
+
+  if mh = 180 [
+    set candidates junctions with [ycor &lt; my and abs (xcor - mx) &lt;= 1.1]
+    if any? candidates [ report max-one-of candidates [ycor] ]
+  ]
+
+  report nobody
+end
+
+
+to-report signed-distance-to-junction [j]
+  if heading = 90  [ report ([xcor] of j - xcor) ]
+  if heading = 270 [ report (xcor - [xcor] of j) ]
+  if heading = 0   [ report ([ycor] of j - ycor) ]
+  if heading = 180 [ report (ycor - [ycor] of j) ]
+  report 999
+end
+
+; ----------------------------------------------------------------------------
+; CAPTEURS ET FILES D'ATTENTE
+; ----------------------------------------------------------------------------
+
+to-report ew-demand [j]
+  let jx [xcor] of j
+  let jy [ycor] of j
+
+  report count cars with [
+    (heading = 90  and abs (ycor - (jy - 1)) &lt; 0.25 and xcor &lt; jx and (jx - xcor) &lt;= sensor-range) or
+    (heading = 270 and abs (ycor - (jy + 1)) &lt; 0.25 and xcor &gt; jx and (xcor - jx) &lt;= sensor-range)
+  ]
+end
+
+
+to-report ns-demand [j]
+  let jx [xcor] of j
+  let jy [ycor] of j
+
+  report count cars with [
+    (heading = 0   and abs (xcor - (jx + 1)) &lt; 0.25 and ycor &lt; jy and (jy - ycor) &lt;= sensor-range) or
+    (heading = 180 and abs (xcor - (jx - 1)) &lt; 0.25 and ycor &gt; jy and (ycor - jy) &lt;= sensor-range)
+  ]
+end
+
+
+to-report ew-queue [j]
+  let jx [xcor] of j
+  let jy [ycor] of j
+
+  report count cars with [
+    stopped? and (
+      (heading = 90  and abs (ycor - (jy - 1)) &lt; 0.25 and xcor &lt; jx and (jx - xcor) &lt;= sensor-range) or
+      (heading = 270 and abs (ycor - (jy + 1)) &lt; 0.25 and xcor &gt; jx and (xcor - jx) &lt;= sensor-range)
+    )
+  ]
+end
+
+
+to-report ns-queue [j]
+  let jx [xcor] of j
+  let jy [ycor] of j
+
+  report count cars with [
+    stopped? and (
+      (heading = 0   and abs (xcor - (jx + 1)) &lt; 0.25 and ycor &lt; jy and (jy - ycor) &lt;= sensor-range) or
+      (heading = 180 and abs (xcor - (jx - 1)) &lt; 0.25 and ycor &gt; jy and (ycor - jy) &lt;= sensor-range)
+    )
+  ]
+end
+
+; ----------------------------------------------------------------------------
+; INDICATEURS
+; ----------------------------------------------------------------------------
+
+to refresh-metrics
+  set stopped-cars-value count cars with [stopped?]
+  set queue-ns-value count cars with [stopped? and (heading = 0 or heading = 180)]
+  set queue-ew-value count cars with [stopped? and (heading = 90 or heading = 270)]
+
+  ifelse any? cars [
+    set congestion-index-value (100 * stopped-cars-value / count cars)
+    set avg-wait-current-value mean [wait-time] of cars
+    set average-speed-value mean [current-speed] of cars
+    set cars-in-intersections-value count cars with [
+      any? junctions in-radius 2.6
+    ]
+  ] [
+    set congestion-index-value 0
+    set avg-wait-current-value 0
+    set average-speed-value 0
+    set cars-in-intersections-value 0
+  ]
+
+  ifelse congestion-index-value &lt; 30 [
+    set congestion-level "FAIBLE"
+  ] [
+    ifelse congestion-index-value &lt; 60 [
+      set congestion-level "MOYENNE"
+    ] [
+      set congestion-level "FORTE"
+    ]
+  ]
+
+  ifelse total-completed &gt; 0 [
+    set avg-wait-completed-value (total-wait-completed / total-completed)
+    set avg-travel-time-value (total-travel-time / total-completed)
+  ] [
+    set avg-wait-completed-value 0
+    set avg-travel-time-value 0
+  ]
+
+  ifelse any? junctions [
+    let queue-list [ (ew-queue self) + (ns-queue self) ] of junctions
+    set mean-queue-value mean queue-list
+    let current-max max queue-list
+    if current-max &gt; max-queue-observed [
+      set max-queue-observed current-max
+    ]
+  ] [
+    set mean-queue-value 0
+  ]
+
+  ; Debit = nombre de vehicules sortis durant les 100 derniers ticks.
+  set exit-ticks filter [t -&gt; t &gt;= (ticks - 100)] exit-ticks
+  set throughput-value length exit-ticks
+end
+
+
+to-report junction-phase-code [id]
+  let j one-of junctions with [junction-id = id]
+  if j = nobody [ report -1 ]
+  report [phase] of j
+end
+
+; ----------------------------------------------------------------------------
+; EXPORT CSV POUR LE MACHINE LEARNING
+; ----------------------------------------------------------------------------
+
+to prepare-csv
+  file-close-all
+  if file-exists? csv-file-name [
+    file-delete csv-file-name
+  ]
+
+  file-open csv-file-name
+  file-print "run,ticks,mode,arrival_rate,ns_demand_share,nb_vehicules,nb_arretes,queue_ns,queue_ew,file_moyenne,vitesse_moyenne,attente_moyenne,vehicules_sortis,debit_100_ticks,congestion_pct,niveau_congestion,phase_j1,phase_j2,phase_j3,phase_j4"
+  file-close
+end
+
+
+to export-row
+  file-open csv-file-name
+  file-print (word
+    run-id ","
+    ticks ","
+    control-mode ","
+    arrival-rate ","
+    ns-demand-share ","
+    count cars ","
+    stopped-cars-value ","
+    queue-ns-value ","
+    queue-ew-value ","
+    mean-queue-value ","
+    average-speed-value ","
+    avg-wait-current-value ","
+    total-completed ","
+    throughput-value ","
+    congestion-index-value ","
+    congestion-level ","
+    junction-phase-code 1 ","
+    junction-phase-code 2 ","
+    junction-phase-code 3 ","
+    junction-phase-code 4)
+  file-close
+end
+
+; ----------------------------------------------------------------------------
+; DEMONSTRATION AUTOMATIQUE
+; ----------------------------------------------------------------------------
+
+to demo
+  setup
+  repeat 1000 [ go ]
+end
+
+</code>
+  <widgets>
+    <view x="10" wrappingAllowedX="false" y="10" frameRate="30.0" minPycor="-25" height="500" showTickCounter="true" patchSize="9.8" fontSize="10" wrappingAllowedY="false" width="500" tickCounterLabel="pas" maxPycor="25" updateMode="0" maxPxcor="25" minPxcor="-25" />
+    <monitor x="530" precision="0" y="440" height="45" fontSize="10" display="Vehicules presents" width="145" sizeVersion="0">count cars</monitor>
+    <monitor x="685" precision="0" y="440" height="45" fontSize="10" display="Vehicules arretes" width="145" sizeVersion="0">stopped-cars-value</monitor>
+    <monitor x="840" precision="1" y="440" height="45" fontSize="10" display="Congestion (%)" width="145" sizeVersion="0">congestion-index-value</monitor>
+    <monitor x="530" precision="0" y="490" height="45" fontSize="10" display="File N-S" width="145" sizeVersion="0">queue-ns-value</monitor>
+    <monitor x="685" precision="0" y="490" height="45" fontSize="10" display="File E-O" width="145" sizeVersion="0">queue-ew-value</monitor>
+    <monitor x="840" precision="0" y="490" height="45" fontSize="10" display="Niveau" width="145" sizeVersion="0">congestion-level</monitor>
+    <monitor x="530" precision="0" y="540" height="45" fontSize="10" display="Vehicules sortis" width="145" sizeVersion="0">total-completed</monitor>
+    <monitor x="685" precision="0" y="540" height="45" fontSize="10" display="Debit / 100 pas" width="145" sizeVersion="0">throughput-value</monitor>
+    <monitor x="840" precision="2" y="540" height="45" fontSize="10" display="Vitesse moyenne" width="145" sizeVersion="0">average-speed-value</monitor>
+    <monitor x="530" precision="1" y="590" height="45" fontSize="10" display="Attente actifs" width="145" sizeVersion="0">avg-wait-current-value</monitor>
+    <monitor x="685" precision="1" y="590" height="45" fontSize="10" display="Attente sortis" width="145" sizeVersion="0">avg-wait-completed-value</monitor>
+    <monitor x="840" precision="1" y="590" height="45" fontSize="10" display="Parcours sortis" width="145" sizeVersion="0">avg-travel-time-value</monitor>
+    <monitor x="530" precision="1" y="640" height="45" fontSize="10" display="File moyenne" width="145" sizeVersion="0">mean-queue-value</monitor>
+    <monitor x="685" precision="0" y="640" height="45" fontSize="10" display="File max" width="145" sizeVersion="0">max-queue-observed</monitor>
+    <monitor x="840" precision="0" y="640" height="45" fontSize="10" display="Vehicules dans carrefours" width="145" sizeVersion="0">cars-in-intersections-value</monitor>
+    <plot x="530" autoPlotX="true" yMax="100.0" autoPlotY="true" yAxis="%" y="700" xMin="0.0" height="160" legend="true" xMax="500.0" yMin="0.0" xAxis="Pas" display="Congestion" width="220" sizeVersion="0">
+      <setup />
+      <update />
+      <pen interval="1.0" mode="0" display="Congestion" color="-2674135" legend="true">
+        <setup />
+        <update>plot congestion-index-value</update>
+      </pen>
+    </plot>
+    <plot x="760" autoPlotX="true" yMax="30.0" autoPlotY="true" yAxis="Vehicules" y="700" xMin="0.0" height="160" legend="true" xMax="500.0" yMin="0.0" xAxis="Pas" display="Files et debit" width="220" sizeVersion="0">
+      <setup />
+      <update />
+      <pen interval="1.0" mode="0" display="File N-S" color="-2674135" legend="true">
+        <setup />
+        <update>plot queue-ns-value</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="File E-O" color="-13345367" legend="true">
+        <setup />
+        <update>plot queue-ew-value</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="Debit" color="-10899396" legend="true">
+        <setup />
+        <update>plot throughput-value</update>
+      </pen>
+    </plot>
+    <note x="530" y="55" height="28" fontSize="14" width="450" markdown="false">PARAMETRES DE SIMULATION</note>
+    <button x="530" y="90" height="33" disableUntilTicks="false" forever="false" kind="Observer" display="MODE CLASSIQUE" width="140" sizeVersion="0">mode-classique</button>
+    <button x="680" y="90" height="33" disableUntilTicks="false" forever="false" kind="Observer" display="MODE INTELLIGENT" width="155" sizeVersion="0">mode-intelligent</button>
+    <monitor x="845" precision="0" y="90" height="40" fontSize="10" display="Mode actif" width="135" sizeVersion="0">control-mode</monitor>
+    <button x="530" y="130" height="33" disableUntilTicks="false" forever="false" kind="Observer" display="TRAFIC FAIBLE" width="135" sizeVersion="0">trafic-faible</button>
+    <button x="675" y="130" height="33" disableUntilTicks="false" forever="false" kind="Observer" display="TRAFIC MOYEN" width="135" sizeVersion="0">trafic-moyen</button>
+    <button x="820" y="130" height="33" disableUntilTicks="false" forever="false" kind="Observer" display="TRAFIC FORT" width="135" sizeVersion="0">trafic-fort</button>
+    <monitor x="530" precision="0" y="170" height="40" fontSize="10" display="Taux d'arrivee (%)" width="210" sizeVersion="0">arrival-rate</monitor>
+    <monitor x="750" precision="0" y="170" height="40" fontSize="10" display="Vehicules initiaux" width="210" sizeVersion="0">initial-cars</monitor>
+    <monitor x="530" precision="2" y="215" height="40" fontSize="10" display="Vitesse max." width="210" sizeVersion="0">max-speed</monitor>
+    <monitor x="750" precision="0" y="215" height="40" fontSize="10" display="Part trafic N-S (%)" width="210" sizeVersion="0">ns-demand-share</monitor>
+    <monitor x="530" precision="0" y="260" height="40" fontSize="10" display="Vert fixe (pas)" width="210" sizeVersion="0">fixed-green</monitor>
+    <monitor x="750" precision="0" y="260" height="40" fontSize="10" display="Vert min / max" width="210" sizeVersion="0">word min-green " / " max-green</monitor>
+    <monitor x="530" precision="0" y="305" height="40" fontSize="10" display="Portee capteurs" width="210" sizeVersion="0">sensor-range</monitor>
+    <monitor x="750" precision="0" y="305" height="40" fontSize="10" display="Seuil changement" width="210" sizeVersion="0">switch-threshold</monitor>
+    <monitor x="530" precision="0" y="350" height="40" fontSize="10" display="Degagement (pas)" width="210" sizeVersion="0">clearance-time</monitor>
+    <button x="750" y="350" height="33" disableUntilTicks="false" forever="false" kind="Observer" display="RALENTIR : OUI / NON" width="210" sizeVersion="0">basculer-ralentissement</button>
+    <button x="530" y="395" height="33" disableUntilTicks="false" forever="false" kind="Observer" display="EXPORT CSV : OUI / NON" width="210" sizeVersion="0">basculer-export-csv</button>
+    <monitor x="750" precision="0" y="395" height="40" fontSize="10" display="Export CSV actif ?" width="210" sizeVersion="0">csv-export?</monitor>
+    <button x="530" y="10" height="33" disableUntilTicks="false" forever="false" kind="Observer" display="INITIALISER" width="120" sizeVersion="0">setup</button>
+    <button x="660" y="10" height="33" disableUntilTicks="false" forever="true" kind="Observer" display="DEMARRER / ARRETER" width="150" sizeVersion="0">go</button>
+    <button x="820" y="10" height="33" disableUntilTicks="false" forever="false" kind="Observer" display="AVANCER D'UN PAS" width="145" sizeVersion="0">go</button>
+    <button x="820" y="50" height="33" disableUntilTicks="false" forever="false" kind="Observer" display="SIMULER 1000 PAS" width="145" sizeVersion="0">demo</button>
+  </widgets>
+  <info>
+## SUJET
+
+**Gestion intelligente du trafic routier sur la reduction des embouteillages en temps reel**
+
+## OBJECTIF
+
+Ce modele multi-agents simule un reseau urbain de quatre carrefours. Les vehicules sont affiches sous forme de miniatures de voitures et circulent sur des voies a sens defini. Chaque approche possede son propre feu physique place avant la ligne blanche d'arret.
+
+Deux modes sont compares :
+
+1. **CLASSIQUE** : duree du vert fixe ;
+2. **INTELLIGENT** : chaque carrefour mesure la demande locale et adapte sa phase selon les files d'attente.
+
+Une phase **tout rouge** est imposee entre deux phases vertes afin de laisser les vehicules deja engages terminer leur traversee.
+
+## LOGIQUE DES FEUX
+
+Chaque carrefour possede quatre feux : un pour les vehicules venant de l'ouest, un de l'est, un du sud et un du nord. Le feu est vert uniquement pour l'axe autorise. Les textes EO/NS ont ete supprimes pour eviter toute ambiguite.
+
+Une voiture qui a recu le vert et franchi la ligne d'arret devient engagee dans le carrefour : elle termine sa traversee meme si le feu change ensuite. Une voiture ne s'engage pas si sa voie de sortie est occupee.
+
+## UTILISATION RAPIDE
+
+1. Choisir **Mode de controle** : CLASSIQUE ou INTELLIGENT.
+2. Cliquer sur **INITIALISER**.
+3. Cliquer sur **DEMARRER / ARRETER**.
+4. Recliquer sur le meme bouton pour arreter.
+5. Comparer congestion, files, attente, debit et vehicules sortis.
+
+**AVANCER D'UN PAS** execute une seule iteration.
+**SIMULER 1000 PAS** lance une demonstration de 1000 iterations.
+
+## EXPORT CSV
+
+Activer **Exporter en CSV ?**, puis INITIALISER et DEMARRER / ARRETER. Le fichier `trafic_groupe3.csv` est cree dans le dossier de travail.
+
+## BEHAVIORSPACE
+
+Deux experiences sont integrees :
+
+- `Comparaison_CLASSIQUE_INTELLIGENT` : comparaison statistique des deux modes ;
+- `Dataset_ML` : observations pas-a-pas pour le Machine Learning.
+
+## CODAGE DES PHASES DANS LES DONNEES
+
+- 0 = Est-Ouest vert ;
+- 1 = Nord-Sud vert ;
+- 2 = tout rouge.
+
+## GROUPE 3
+
+- AMISI FATAKI JUBILE
+- AZEKWA MATAKOBA LEONARD
+- MASIALA NSUNGI SEPHORA
+- MATONDO BWAYI PLAMEDI
+- MUENGE KASONGA ASTRID
+</info>
+  <turtleShapes>
+    <shape name="default" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="5" />
+        <point x="40" y="250" />
+        <point x="150" y="205" />
+        <point x="260" y="250" />
+      </polygon>
+    </shape>
+    <shape name="arrow" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="0" />
+        <point x="0" y="150" />
+        <point x="105" y="150" />
+        <point x="105" y="293" />
+        <point x="195" y="293" />
+        <point x="195" y="150" />
+        <point x="300" y="150" />
+      </polygon>
+    </shape>
+    <shape name="car" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="105" y="15" />
+        <point x="195" y="15" />
+        <point x="225" y="45" />
+        <point x="240" y="95" />
+        <point x="240" y="235" />
+        <point x="215" y="285" />
+        <point x="85" y="285" />
+        <point x="60" y="235" />
+        <point x="60" y="95" />
+        <point x="75" y="45" />
+      </polygon>
+      <rectangle color="255" filled="true" marked="false" startX="92" startY="72" endX="208" endY="126" />
+      <rectangle color="255" filled="true" marked="false" startX="92" startY="170" endX="208" endY="224" />
+      <rectangle color="255" filled="true" marked="false" startX="43" startY="88" endX="68" endY="138" />
+      <rectangle color="255" filled="true" marked="false" startX="232" startY="88" endX="257" endY="138" />
+      <rectangle color="255" filled="true" marked="false" startX="43" startY="188" endX="68" endY="238" />
+      <rectangle color="255" filled="true" marked="false" startX="232" startY="188" endX="257" endY="238" />
+      <circle color="-256" filled="true" marked="false" x="88" y="28" diameter="22" />
+      <circle color="-256" filled="true" marked="false" x="190" y="28" diameter="22" />
+    </shape>
+    <shape name="traffic-light" rotatable="false" editableColorIndex="0">
+      <rectangle color="255" filled="true" marked="false" startX="75" startY="20" endX="225" endY="195" />
+      <circle color="-1920102913" filled="true" marked="true" x="103" y="47" diameter="94" />
+      <circle color="7500403" filled="true" marked="false" x="118" y="145" diameter="64" />
+      <rectangle color="255" filled="true" marked="false" startX="135" startY="195" endX="165" endY="300" />
+    </shape>
+  </turtleShapes>
+  <linkShapes>
+    <shape name="default" curviness="0.0">
+      <lines>
+        <line x="-0.2" visible="false">
+          <dash value="0.0" />
+          <dash value="1.0" />
+        </line>
+        <line x="0.0" visible="true">
+          <dash value="1.0" />
+          <dash value="0.0" />
+        </line>
+        <line x="0.2" visible="false">
+          <dash value="0.0" />
+          <dash value="1.0" />
+        </line>
+      </lines>
+      <indicator>
+        <shape name="link direction" rotatable="true" editableColorIndex="0">
+          <line endX="90" startY="150" marked="true" color="-1920102913" endY="180" startX="150" />
+          <line endX="210" startY="150" marked="true" color="-1920102913" endY="180" startX="150" />
+        </shape>
+      </indicator>
+    </shape>
+  </linkShapes>
+  <previewCommands>setup
+repeat 100 [ go ]</previewCommands>
+  <experiments>
+    <experiment name="Comparaison_CLASSIQUE_INTELLIGENT" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="1200">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>total-completed</metric>
+        <metric>throughput-value</metric>
+        <metric>congestion-index-value</metric>
+        <metric>avg-wait-completed-value</metric>
+        <metric>avg-travel-time-value</metric>
+        <metric>mean-queue-value</metric>
+        <metric>max-queue-observed</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="control-mode">
+          <value value="&quot;CLASSIQUE&quot;" />
+          <value value="&quot;INTELLIGENT&quot;" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="arrival-rate">
+          <value value="20" />
+          <value value="40" />
+          <value value="60" />
+          <value value="80" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="ns-demand-share">
+          <value value="30" />
+          <value value="50" />
+          <value value="70" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="initial-cars">
+          <value value="30" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="max-cars">
+          <value value="300" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="max-speed">
+          <value value="0.25" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="fixed-green">
+          <value value="60" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="min-green">
+          <value value="30" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="max-green">
+          <value value="100" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="sensor-range">
+          <value value="6" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="switch-threshold">
+          <value value="2" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="clearance-time">
+          <value value="20" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="slow-visualization?">
+          <value value="false" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="visual-delay">
+          <value value="0" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="csv-export?">
+          <value value="false" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="export-interval">
+          <value value="5" />
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="Dataset_ML" repetitions="8" sequentialRunOrder="true" runMetricsEveryStep="true" timeLimit="700">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>ticks</metric>
+        <metric>count cars</metric>
+        <metric>stopped-cars-value</metric>
+        <metric>queue-ns-value</metric>
+        <metric>queue-ew-value</metric>
+        <metric>mean-queue-value</metric>
+        <metric>average-speed-value</metric>
+        <metric>avg-wait-current-value</metric>
+        <metric>total-completed</metric>
+        <metric>throughput-value</metric>
+        <metric>congestion-index-value</metric>
+        <metric>congestion-level</metric>
+        <metric>junction-phase-code 1</metric>
+        <metric>junction-phase-code 2</metric>
+        <metric>junction-phase-code 3</metric>
+        <metric>junction-phase-code 4</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="control-mode">
+          <value value="&quot;CLASSIQUE&quot;" />
+          <value value="&quot;INTELLIGENT&quot;" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="arrival-rate">
+          <value value="20" />
+          <value value="40" />
+          <value value="60" />
+          <value value="80" />
+          <value value="100" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="ns-demand-share">
+          <value value="30" />
+          <value value="50" />
+          <value value="70" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="initial-cars">
+          <value value="30" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="max-cars">
+          <value value="300" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="max-speed">
+          <value value="0.25" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="fixed-green">
+          <value value="60" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="min-green">
+          <value value="30" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="max-green">
+          <value value="100" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="sensor-range">
+          <value value="6" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="switch-threshold">
+          <value value="2" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="clearance-time">
+          <value value="20" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="slow-visualization?">
+          <value value="false" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="visual-delay">
+          <value value="0" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="csv-export?">
+          <value value="false" />
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="export-interval">
+          <value value="5" />
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+  </experiments>
+</model>

@@ -1,0 +1,151 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<experiments>
+  <experiment name="Comparaison_CLASSIQUE_INTELLIGENT" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="1200">
+    <setup>setup</setup>
+    <go>go</go>
+    <metrics>
+      <metric>total-completed</metric>
+      <metric>throughput-value</metric>
+      <metric>congestion-index-value</metric>
+      <metric>avg-wait-completed-value</metric>
+      <metric>avg-travel-time-value</metric>
+      <metric>mean-queue-value</metric>
+      <metric>max-queue-observed</metric>
+    </metrics>
+    <constants>
+      <enumeratedValueSet variable="control-mode">
+        <value value="&quot;CLASSIQUE&quot;"/>
+        <value value="&quot;INTELLIGENT&quot;"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="arrival-rate">
+        <value value="20"/>
+        <value value="40"/>
+        <value value="60"/>
+        <value value="80"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="ns-demand-share">
+        <value value="30"/>
+        <value value="50"/>
+        <value value="70"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="initial-cars">
+        <value value="30"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="max-cars">
+        <value value="300"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="max-speed">
+        <value value="0.25"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="fixed-green">
+        <value value="60"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="min-green">
+        <value value="30"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="max-green">
+        <value value="100"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="sensor-range">
+        <value value="6"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="switch-threshold">
+        <value value="2"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="clearance-time">
+        <value value="20"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="slow-visualization?">
+        <value value="false"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="visual-delay">
+        <value value="0"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="csv-export?">
+        <value value="false"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="export-interval">
+        <value value="5"/>
+      </enumeratedValueSet>
+    </constants>
+  </experiment>
+  <experiment name="Dataset_ML" repetitions="8" sequentialRunOrder="true" runMetricsEveryStep="true" timeLimit="700">
+    <setup>setup</setup>
+    <go>go</go>
+    <metrics>
+      <metric>ticks</metric>
+      <metric>count cars</metric>
+      <metric>stopped-cars-value</metric>
+      <metric>queue-ns-value</metric>
+      <metric>queue-ew-value</metric>
+      <metric>mean-queue-value</metric>
+      <metric>average-speed-value</metric>
+      <metric>avg-wait-current-value</metric>
+      <metric>total-completed</metric>
+      <metric>throughput-value</metric>
+      <metric>congestion-index-value</metric>
+      <metric>congestion-level</metric>
+      <metric>junction-phase-code 1</metric>
+      <metric>junction-phase-code 2</metric>
+      <metric>junction-phase-code 3</metric>
+      <metric>junction-phase-code 4</metric>
+    </metrics>
+    <constants>
+      <enumeratedValueSet variable="control-mode">
+        <value value="&quot;CLASSIQUE&quot;"/>
+        <value value="&quot;INTELLIGENT&quot;"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="arrival-rate">
+        <value value="20"/>
+        <value value="40"/>
+        <value value="60"/>
+        <value value="80"/>
+        <value value="100"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="ns-demand-share">
+        <value value="30"/>
+        <value value="50"/>
+        <value value="70"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="initial-cars">
+        <value value="30"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="max-cars">
+        <value value="300"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="max-speed">
+        <value value="0.25"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="fixed-green">
+        <value value="60"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="min-green">
+        <value value="30"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="max-green">
+        <value value="100"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="sensor-range">
+        <value value="6"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="switch-threshold">
+        <value value="2"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="clearance-time">
+        <value value="20"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="slow-visualization?">
+        <value value="false"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="visual-delay">
+        <value value="0"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="csv-export?">
+        <value value="false"/>
+      </enumeratedValueSet>
+      <enumeratedValueSet variable="export-interval">
+        <value value="5"/>
+      </enumeratedValueSet>
+    </constants>
+  </experiment>
+</experiments>
